@@ -16,6 +16,7 @@ public class Hook implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lp) {
         if (!PKG.equals(lp.packageName)) return;
+        XposedBridge.log("StdWifiIcon: systemui loaded");
         try {
             final ClassLoader cl = lp.classLoader;
             final Class<?> sam = XposedHelpers.findClass(SAM, cl);
@@ -27,9 +28,28 @@ public class Hook implements IXposedHookLoadPackage {
 
             XposedHelpers.findAndHookMethod(LAMBDA, cl, "invokeSuspend", Object.class, new XC_MethodHook() {
                 @Override
+                protected void beforeHookedMethod(MethodHookParam p) {
+                    try {
+                        Object m = XposedHelpers.getObjectField(p.thisObject, "L$0");
+                        if (m != null && m.getClass().getName().endsWith("WifiNetworkModel$Active")) {
+                            int std = XposedHelpers.getIntField(m, "wifiStandard");
+                            if (std == 6 || std == 8) {
+                                XposedHelpers.setIntField(m, "wifiStandard", 5);
+                                XposedBridge.log("StdWifiIcon: standard " + std + " -> 5");
+                            }
+                        }
+                    } catch (Throwable t) {
+                        XposedBridge.log("StdWifiIcon: before failed " + t);
+                    }
+                }
+
+                @Override
                 protected void afterHookedMethod(MethodHookParam p) {
                     Object r = p.getResult();
-                    if (r != null && (r == g6 || r == g6e || r == g7)) p.setResult(standard);
+                    if (r != null && (r == g6 || r == g6e || r == g7)) {
+                        p.setResult(standard);
+                        XposedBridge.log("StdWifiIcon: group replaced");
+                    }
                 }
             });
             XposedBridge.log("StdWifiIcon: hooked");
@@ -37,4 +57,4 @@ public class Hook implements IXposedHookLoadPackage {
             XposedBridge.log("StdWifiIcon: failed " + t);
         }
     }
-  }
+                }
