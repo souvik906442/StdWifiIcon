@@ -18,7 +18,9 @@ import android.view.View;
 import android.util.SparseIntArray;
 import android.util.TypedValue;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -36,7 +38,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * plain group. We return WIFI_ICON_6GE (std 4) or WIFI_ICON_7G (std 5) instead; those groups carry the drawable ids
  * stat_sys_wifi6e_signal_N / stat_sys_wifi7_signal_N. When SystemUI loads those drawables we hand back our own
  * "4"/"5" icons. (This tablet has no 6 GHz / Wi-Fi 7, so those ids are otherwise unused.)
- * Also: double tap on the status bar turns the screen off.
+ * Also: double tap on the status bar turns the screen off; Circle to Search unlock.
  */
 public class Hook implements IXposedHookLoadPackage {
     private static final String SUI = "com.android.systemui";
@@ -80,6 +82,7 @@ public class Hook implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lp) {
         if (!SUI.equals(lp.packageName)) return;
+        hookCts(lp.classLoader);
         final ClassLoader cl = lp.classLoader;
         final Class<?> sam = XposedHelpers.findClassIfExists(SAM, cl);
         if (sam == null) return; // secondary classloader
@@ -138,6 +141,53 @@ public class Hook implements IXposedHookLoadPackage {
             XposedBridge.log("StdWifiIcon: failed " + t);
         }
         hookDoubleTapSleep(cl);
+    }
+
+    // ---- Circle to Search unlock (AssistStateManager.isCsHelperAvailable -> true) ----
+    private static final String CTS_TARGET = "com.android.systemui.plugins.omni.AssistStateManager";
+    private static volatile boolean ctsHooked = false;
+    private static volatile boolean ctsLoaderHooked = false;
+
+    private static void hookCts(ClassLoader cl) {
+        if (ctsHooked) return;
+        try {
+            hookCtsClass(XposedHelpers.findClass(CTS_TARGET, cl));
+        } catch (Throwable t) {
+            XposedBridge.log("StdWifiIcon: CTS direct lookup failed, waiting for loadClass");
+        }
+        if (ctsLoaderHooked || ctsHooked) return;
+        try {
+            XposedHelpers.findAndHookMethod(ClassLoader.class, "loadClass", String.class, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (ctsHooked) return;
+                    Object r = param.getResult();
+                    if (r instanceof Class && CTS_TARGET.equals(((Class<?>) r).getName())) hookCtsClass((Class<?>) r);
+                }
+            });
+            ctsLoaderHooked = true;
+        } catch (Throwable t) {
+            XposedBridge.log("StdWifiIcon: CTS loadClass hook failed " + t);
+        }
+    }
+
+    private static synchronized void hookCtsClass(Class<?> c) {
+        if (ctsHooked) return;
+        int n = 0;
+        for (Method m : c.getDeclaredMethods()) {
+            if (!m.getName().equals("isCsHelperAvailable")) continue;
+            final Class<?> rt = m.getReturnType();
+            XposedBridge.hookMethod(m, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (rt == Boolean.TYPE || rt == Boolean.class) param.setResult(Boolean.TRUE);
+                    else if (rt == Optional.class) param.setResult(Optional.of(Boolean.TRUE));
+                }
+            });
+            XposedBridge.log("StdWifiIcon: CTS hooked " + c.getName() + "#" + m.getName());
+            n++;
+        }
+        ctsHooked = n > 0;
     }
 
     private static long lastDown = 0L;
