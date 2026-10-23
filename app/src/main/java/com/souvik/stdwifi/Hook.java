@@ -1,5 +1,6 @@
 package com.souvik.stdwifi;
 
+import android.content.Context;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.graphics.Canvas;
@@ -10,6 +11,10 @@ import android.graphics.PixelFormat;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.drawable.Drawable;
+import android.os.PowerManager;
+import android.os.SystemClock;
+import android.view.MotionEvent;
+import android.view.View;
 import android.util.SparseIntArray;
 import android.util.TypedValue;
 
@@ -31,6 +36,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * plain group. We return WIFI_ICON_6GE (std 4) or WIFI_ICON_7G (std 5) instead; those groups carry the drawable ids
  * stat_sys_wifi6e_signal_N / stat_sys_wifi7_signal_N. When SystemUI loads those drawables we hand back our own
  * "4"/"5" icons. (This tablet has no 6 GHz / Wi-Fi 7, so those ids are otherwise unused.)
+ * Also: double tap on the status bar turns the screen off.
  */
 public class Hook implements IXposedHookLoadPackage {
     private static final String SUI = "com.android.systemui";
@@ -130,6 +136,41 @@ public class Hook implements IXposedHookLoadPackage {
             XposedBridge.log("StdWifiIcon: hooked OK");
         } catch (Throwable t) {
             XposedBridge.log("StdWifiIcon: failed " + t);
+        }
+        hookDoubleTapSleep(cl);
+    }
+
+    private static long lastDown = 0L;
+
+    /** Double tap on the status bar -> turn the screen off (two ACTION_DOWN events 40..300 ms apart). */
+    private static void hookDoubleTapSleep(final ClassLoader cl) {
+        try {
+            XposedHelpers.findAndHookMethod("com.android.systemui.statusbar.phone.PhoneStatusBarView", cl,
+                    "onTouchEvent", MotionEvent.class, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam p) {
+                            try {
+                                MotionEvent e = (MotionEvent) p.args[0];
+                                if (e.getAction() != MotionEvent.ACTION_DOWN) return;
+                                long now = System.nanoTime();
+                                long dt = now - lastDown;
+                                if (dt >= 40000000L && dt <= 300000000L) {
+                                    lastDown = 0L;
+                                    Context ctx = ((View) p.thisObject).getContext();
+                                    PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+                                    XposedHelpers.callMethod(pm, "goToSleep", SystemClock.uptimeMillis());
+                                    p.setResult(Boolean.TRUE);
+                                } else {
+                                    lastDown = now;
+                                }
+                            } catch (Throwable t) {
+                                XposedBridge.log("StdWifiIcon: tap failed " + t);
+                            }
+                        }
+                    });
+            XposedBridge.log("StdWifiIcon: double-tap hooked");
+        } catch (Throwable t) {
+            XposedBridge.log("StdWifiIcon: double-tap hook failed " + t);
         }
     }
 
